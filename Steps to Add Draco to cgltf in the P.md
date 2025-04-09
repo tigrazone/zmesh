@@ -64,6 +64,54 @@ The `cgltf` library already has support for the `KHR_draco_mesh_compression` ext
    ) !void {
        // Call Draco's decoding functions here
        // Example: Use FFI to call Draco's C++ decoder functions
+    const c = @cImport({
+        @cInclude("draco/compression/decode.h");
+        @cInclude("draco/core/decoder_buffer.h");
+    });
+
+    // Create a Draco decoder buffer
+    var buffer = c.draco.DecoderBuffer{};
+    c.draco.DecoderBuffer_Init(&buffer, @ptrCast([*]const u8, draco_data.ptr), draco_data.len);
+
+    // Initialize the Draco decoder
+    var decoder = c.draco.Decoder{};
+
+    // Decode the mesh
+    const mesh = c.draco.Mesh{};
+    const status = c.draco.Decoder_DecodeMeshFromBuffer(&decoder, &buffer, &mesh);
+    if (c.draco.Status_IsOk(status) == 0) {
+        return error.DecodingFailed;
+    }
+
+    // Extract indices
+    const num_faces = c.draco.Mesh_NumFaces(&mesh);
+    try indices.ensureTotalCapacity(num_faces * 3);
+    for (var i: usize = 0; i < num_faces; i += 1) {
+        var face = c.draco.Face{};
+        c.draco.Mesh_GetFace(&mesh, i, &face);
+
+        indices.appendAssumeCapacity(face.index[0]);
+        indices.appendAssumeCapacity(face.index[1]);
+        indices.appendAssumeCapacity(face.index[2]);
+    }
+
+    // Extract positions
+    const pos_att = c.draco.Mesh_GetAttributeByUniqueId(&mesh, c.draco.POSITION);
+    if (pos_att == null) {
+        return error.MissingPositionAttribute;
+    }
+    const num_vertices = c.draco.Mesh_NumPoints(&mesh);
+    try positions.ensureTotalCapacity(num_vertices);
+    for (var i: usize = 0; i < num_vertices; i += 1) {
+        var pos: [3]f32 = undefined;
+        c.draco.AttributeDecoder_DecodeAttributeFloat(&decoder, pos_att, i, &pos[0], 3);
+        positions.appendAssumeCapacity(pos);
+    }
+
+    // Clean up
+    c.draco.Decoder_Delete(&decoder);
+    c.draco.Mesh_Delete(&mesh);
+    c.draco.DecoderBuffer_Delete(&buffer);
    }
    ```
 
@@ -82,7 +130,3 @@ Update the `README.md` file to include instructions for enabling Draco support, 
 
 1. Add test cases for Draco-compressed glTF models.
 2. Run the tests using the `zmesh` test infrastructure.
-
----
-
-Let me know if you need more detailed code examples or further assistance!
