@@ -118,6 +118,133 @@ The `cgltf` library already has support for the `KHR_draco_mesh_compression` ext
 3. **Integrate Draco Decoding in `appendMeshPrimitive`**
    Modify the `zcgltf.appendMeshPrimitive` function to check for Draco compression and call `decodeDracoBuffer` if needed.
 
+   To integrate Draco decoding into the `zcgltf.appendMeshPrimitive` function, you need to check whether the mesh uses Draco compression (via the `KHR_draco_mesh_compression` extension) and then delegate the decoding process to the `decodeDracoBuffer` function.
+
+Here's how you can modify the `zcgltf.appendMeshPrimitive` function:
+
+---
+
+```zig name=src/zcgltf.zig
+pub fn appendMeshPrimitive(
+    data: *Data,
+    mesh_index: u32,
+    prim_index: u32,
+    indices: *std.ArrayList(u32),
+    positions: *std.ArrayList([3]f32),
+    normals: ?*std.ArrayList([3]f32),
+    texcoords0: ?*std.ArrayList([2]f32),
+    tangents: ?*std.ArrayList([4]f32),
+) !void {
+    assert(mesh_index < data.meshes_count);
+    assert(prim_index < data.meshes.?[mesh_index].primitives_count);
+
+    const mesh = &data.meshes.?[mesh_index];
+    const prim = &mesh.primitives[prim_index];
+
+    // Check if the primitive uses Draco compression
+    if (prim.has_draco_mesh_compression) {
+        const draco_comp = prim.draco_mesh_compression;
+        const buffer_view = draco_comp.buffer_view.?; // Draco-compressed buffer view
+        const buffer = buffer_view.buffer;
+
+        assert(buffer.data != null);
+
+        const draco_data = buffer.data[buffer_view.offset .. buffer_view.offset + buffer_view.size];
+        try decodeDracoBuffer(draco_data, indices, positions);
+
+        return; // Exit early since Draco decoding is complete
+    }
+
+    const num_vertices: u32 = @as(u32, @intCast(prim.attributes[0].data.count));
+    const num_indices: u32 = @as(u32, @intCast(prim.indices.?.count));
+
+    // Indices
+    {
+        try indices.ensureTotalCapacity(indices.items.len + num_indices);
+
+        const accessor = prim.indices.?;
+        const buffer_view = accessor.buffer_view.?;
+
+        assert(accessor.stride == buffer_view.stride or buffer_view.stride == 0);
+        assert(buffer_view.buffer.data != null);
+
+        const data_addr = @as([*]const u8, @ptrCast(buffer_view.buffer.data)) +
+            accessor.offset + buffer_view.offset;
+
+        if (accessor.stride == 1) {
+            if (accessor.component_type != .r_8u) {
+                return error.InvalidIndicesAccessorComponentType;
+            }
+            const src = @as([*]const u8, @ptrCast(data_addr));
+            var i: u32 = 0;
+            while (i < num_indices) : (i += 1) {
+                indices.appendAssumeCapacity(src[i]);
+            }
+        } else if (accessor.stride == 2) {
+            if (accessor.component_type != .r_16u) {
+                return error.InvalidIndicesAccessorComponentType;
+            }
+            const src = @as([*]const u16, @ptrCast(@alignCast(data_addr)));
+            var i: u32 = 0;
+            while (i < num_indices) : (i += 1) {
+                indices.appendAssumeCapacity(src[i]);
+            }
+        } else if (accessor.stride == 4) {
+            if (accessor.component_type != .r_32u) {
+                return error.InvalidIndicesAccessorComponentType;
+            }
+            const src = @as([*]const u32, @ptrCast(@alignCast(data_addr)));
+            var i: u32 = 0;
+            while (i < num_indices) : (i += 1) {
+                indices.appendAssumeCapacity(src[i]);
+            }
+        } else {
+            return error.UnsupportedIndicesAccessorStride;
+        }
+    }
+
+    // Positions
+    {
+        const accessor = prim.attributes[0].data;
+        const buffer_view = accessor.buffer_view.?;
+
+        assert(buffer_view.buffer.data != null);
+
+        const data_addr = @as([*]const u8, @ptrCast(buffer_view.buffer.data)) +
+            accessor.offset + buffer_view.offset;
+
+        try positions.ensureTotalCapacity(positions.items.len + num_vertices);
+
+        const src = @as([*]const [3]f32, @ptrCast(@alignCast(data_addr)));
+        var i: u32 = 0;
+        while (i < num_vertices) : (i += 1) {
+            positions.appendAssumeCapacity(src[i]);
+        }
+    }
+
+    // Handle optional attributes (normals, texcoords, tangents) here if needed...
+}
+```
+
+### Key Changes:
+
+1. **Draco Compression Check**:
+
+   - The `has_draco_mesh_compression` flag is checked for the primitive.
+   - If Draco compression is present, the `draco_mesh_compression` information is retrieved.
+
+2. **Call `decodeDracoBuffer`**:
+
+   - The Draco buffer data is extracted and passed to the `decodeDracoBuffer` function.
+   - The `indices` and `positions` lists are populated by the decoding function.
+
+3. **Early Exit**:
+
+   - If Draco decoding is successful, the function immediately returns without processing further attributes.
+
+4. **Fallback for Non-Draco Data**:
+   - If the primitive does not use Draco compression, the function falls back to the standard glTF decoding logic.
+
 ---
 
 #### **Step 4: Update Documentation**
